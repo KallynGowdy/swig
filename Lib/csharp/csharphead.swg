@@ -15,13 +15,13 @@
 %pragma(csharp) imclasscode=%{
   /// For Xamarin.iOS MonoTouch.MonoPInvokeCallback functionality
   /// This attribute can be defined in any assembly for Xamarin.iOS to use it.
-  public class MonoPInvokeCallbackAttribute : Attribute {
-    public MonoPInvokeCallbackAttribute(Type t) {
+  public class MonoPInvokeCallbackAttribute : global::System.Attribute {
+    public MonoPInvokeCallbackAttribute(global::System.Type t) {
     }
   }
   /// For Xamarin.iOS MonoTouch.MonoNativeFunctionWrapper functionality
   /// This attribute can be defined in any assembly for Xamarin.iOS to use it.
-  public class MonoNativeFunctionWrapperAttribute : Attribute {
+  public class MonoNativeFunctionWrapperAttribute : global::System.Attribute {
     public MonoNativeFunctionWrapperAttribute() {
     }
   }
