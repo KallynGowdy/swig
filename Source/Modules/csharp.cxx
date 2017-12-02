@@ -3781,6 +3781,8 @@ public:
     String *callback_code = NewString("");
     String *imcall_args = NewString("");
     bool ignored_method = GetFlag(n, "feature:ignore") ? true : false;
+    UpcallData *udata = 0;
+    String *methid = 0;
 
     // Kludge Alert: functionWrapper sets sym:overload properly, but it
     // isn't at this point, so we have to manufacture it ourselves. At least
@@ -3790,6 +3792,12 @@ public:
     imclass_dmethod = NewStringf("SwigDirector_%s", Swig_name_member(getNSpace(), getClassPrefix(), overloaded_name));
 
     qualified_return = SwigType_rcaststr(returntype, "c_result");
+
+    if (!ignored_method) {
+      udata = addUpcallMethod(imclass_dmethod, symname, decl, overloaded_name);
+      methid = Getattr(udata, "class_methodidx");
+      Setattr(n, "upcalldata", udata);
+    }
 
     if (!is_void && (!ignored_method || pure_virtual)) {
       if (!SwigType_isclass(returntype)) {
@@ -3853,13 +3861,15 @@ public:
 	  Printf(director_delegate_definitions, "  %s\n", im_directoroutattributes);
       }
 
-      Printf(callback_def, "  private %s SwigDirector%s(", tm, overloaded_name);
       if (!ignored_method) {
-	const String *csdirectordelegatemodifiers = Getattr(n, "feature:csdirectordelegatemodifiers");
-	String *modifiers = (csdirectordelegatemodifiers ? NewStringf("%s%s", csdirectordelegatemodifiers, Len(csdirectordelegatemodifiers) > 0 ? " " : "") : NewStringf("public "));
-	Printf(director_delegate_definitions, "  %sdelegate %s", modifiers, tm);
-	Delete(modifiers);
+  	const String *csdirectordelegatemodifiers = Getattr(n, "feature:csdirectordelegatemodifiers"); 
+        Printf(callback_def, "  [%s.MonoPInvokeCallback(typeof(SwigDelegate%s_%s))]\n", imclass_name, classname, methid);
+	Printf(director_delegate_definitions, "  [%s.MonoNativeFunctionWrapper]\n", imclass_name);
+  	String *modifiers = (csdirectordelegatemodifiers ? NewStringf("%s%s", csdirectordelegatemodifiers, Len(csdirectordelegatemodifiers) > 0 ? " " : "") : NewStringf("public ")); 
+  	Printf(director_delegate_definitions, "  %sdelegate %s", modifiers, tm); 
+	Delete(modifiers); 
       }
+      Printf(callback_def, "  private %s SwigDirector%s(", tm, overloaded_name);
     } else {
       Swig_warning(WARN_CSHARP_TYPEMAP_CSTYPE_UNDEF, input_file, line_number, "No imtype typemap defined for %s\n", SwigType_str(returntype, 0));
     }
@@ -4220,13 +4230,6 @@ public:
 
     if (!ignored_method) {
       /* Emit the actual upcall through */
-      UpcallData *udata = addUpcallMethod(imclass_dmethod, symname, decl, overloaded_name);
-      String *methid = Getattr(udata, "class_methodidx");
-      Setattr(n, "upcalldata", udata);
-      /*
-      Printf(stdout, "setting upcalldata, nodeType: %s %s::%s %p\n", nodeType(n), classname, Getattr(n, "name"), n);
-      */
-
       Printf(director_callback_typedefs, "    typedef %s (SWIGSTDCALL* SWIG_Callback%s_t)(", c_ret_type, methid);
       Printf(director_callback_typedefs, "%s);\n", callback_typedef_parms);
       Printf(director_callbacks, "    SWIG_Callback%s_t swig_callback%s;\n", methid, overloaded_name);
