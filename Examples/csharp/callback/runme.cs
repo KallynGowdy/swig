@@ -11,7 +11,7 @@ public class runme
     using (Callback callback = new Callback())
     {
       caller.setCallback(callback);
-      caller.call();
+      caller.call(99);
       caller.resetCallback();
     }
 
@@ -22,7 +22,7 @@ public class runme
     using (Callback callback = new CSharpCallback())
     {
       caller.setCallback(callback);
-      caller.call();
+      caller.call(10);
       caller.resetCallback();
     }
 
@@ -38,7 +38,7 @@ public class CSharpCallback : Callback
   {
   }
 
-  public override void run()
+  public override void run(int value)
   {
     Console.WriteLine("CSharpCallback.run()");
   }

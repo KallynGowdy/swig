@@ -46,6 +46,7 @@ class CSHARP:public Language {
   bool global_variable_flag;	// Flag for when wrapping a global variable
   bool old_variable_names;	// Flag for old style variable names in the intermediary class
   bool generate_property_declaration_flag;	// Flag for generating properties
+  bool aot_support_flag;        // Flag for when to emit support for Ahead Of Time (AOT) compilation
 
   String *imclass_name;		// intermediary class name
   String *module_class_name;	// module class name
@@ -264,6 +265,9 @@ public:
 	  } else {
 	    Swig_arg_error();
 	  }
+	} else if(strcmp(argv[i], "-aot") == 0) {
+	  Swig_mark_arg(i);
+	  aot_support_flag = true;
 	} else if (strcmp(argv[i], "-help") == 0) {
 	  Printf(stdout, "%s\n", usage);
 	}
@@ -1928,15 +1932,25 @@ public:
 	String *method = Getattr(udata, "method");
 	String *methid = Getattr(udata, "class_methodidx");
 	String *overname = Getattr(udata, "overname");
-	Printf(proxy_class_code, "    if (SwigDerivedClassHasMethod(\"%s\", swigMethodTypes%s))\n", method, methid);
+	Printf(proxy_class_code, "    if (SwigDerivedClassHasMethod(\"%s\", swigMethodTypes%s)) {\n", method, methid);
 	Printf(proxy_class_code, "      swigDelegate%s = new SwigDelegate%s_%s(SwigDirector%s);\n", methid, proxy_class_name, methid, overname);
+	if (aot_support_flag) {
+	  Printf(proxy_class_code, "      swigDelegate%s_handle = global::System.Runtime.InteropServices.GCHandle.Alloc(swigDelegate%s);\n", methid, methid);
+	}
+	Printf(proxy_class_code, "    }\n");
       }
       String *director_connect_method_name = Swig_name_member(getNSpace(), getClassPrefix(), "director_connect");
       Printf(proxy_class_code, "    %s.%s(swigCPtr", imclass_name, director_connect_method_name);
       for (i = first_class_dmethod; i < curr_class_dmethod; ++i) {
 	UpcallData *udata = Getitem(dmethods_seq, i);
 	String *methid = Getattr(udata, "class_methodidx");
-	Printf(proxy_class_code, ", swigDelegate%s", methid);
+	if (aot_support_flag) {
+	  String *overname = Getattr(udata, "overname");
+	  Printf(proxy_class_code, ", SwigDirectorStatic%s", overname);
+	  Printf(proxy_class_code, ", global::System.Runtime.InteropServices.GCHandle.ToIntPtr(swigDelegate%s_handle)", methid);
+	} else {
+	  Printf(proxy_class_code, ", swigDelegate%s", methid);
+	}
       }
       Printf(proxy_class_code, ");\n");
       Printf(proxy_class_code, "  }\n");
@@ -3718,9 +3732,21 @@ public:
       Printf(code_wrap->def, ", ");
       if (i != first_class_dmethod)
 	Printf(code_wrap->code, ", ");
+      
       Printf(code_wrap->def, "%s::SWIG_Callback%s_t callback%s", dirclassname, methid, methid);
       Printf(code_wrap->code, "callback%s", methid);
-      Printf(imclass_class_code, ", %s.SwigDelegate%s_%s delegate%s", qualified_classname, sym_name, methid, methid);
+      if (aot_support_flag) {
+	Printf(code_wrap->def, ", void *callback%s_handle", methid);
+	Printf(code_wrap->code, ", callback%s_handle", methid);
+      }
+      if (aot_support_flag) {
+	Printf(imclass_class_code, ", %s.SwigDelegateStatic%s_%s delegate%s", qualified_classname, sym_name, methid, methid);
+      } else {
+	Printf(imclass_class_code, ", %s.SwigDelegate%s_%s delegate%s", qualified_classname, sym_name, methid, methid);
+      }
+      if (aot_support_flag) {
+	Printf(imclass_class_code, ", global::System.IntPtr delegate%s_handle", methid);
+      }
     }
 
     Printf(code_wrap->def, ") {\n");
@@ -3776,8 +3802,11 @@ public:
     String *imclass_dmethod;
     String *callback_typedef_parms = NewString("");
     String *delegate_parms = NewString("");
+    String *aot_delegate_parms = NewString(""); // delegate_parms, but with the callback handle
     String *proxy_method_types = NewString("");
     String *callback_def = NewString("");
+    String *aot_callback_def = NewString(""); // callback function that forwards to callback_def
+    String *aot_delegate_definitions = NewString(""); // delegate definitions for AOT
     String *callback_code = NewString("");
     String *imcall_args = NewString("");
     bool ignored_method = GetFlag(n, "feature:ignore") ? true : false;
@@ -3863,8 +3892,13 @@ public:
 
       if (!ignored_method) {
   	const String *csdirectordelegatemodifiers = Getattr(n, "feature:csdirectordelegatemodifiers"); 
-        Printf(callback_def, "  [%s.MonoPInvokeCallback(typeof(SwigDelegate%s_%s))]\n", imclass_name, classname, methid);
-	Printf(director_delegate_definitions, "  [%s.MonoNativeFunctionWrapper]\n", imclass_name);
+	
+	if (aot_support_flag) {
+	  Printf(aot_callback_def, "  [%s.MonoPInvokeCallback(typeof(SwigDelegate%s_%s))]\n", imclass_name, classname, methid);
+	  Printf(aot_callback_def, "  private static %s SwigDirectorStatic%s(", tm, overloaded_name);
+	  Printf(aot_delegate_definitions, "  [%s.MonoNativeFunctionWrapper]\n", imclass_name);
+	  Printf(aot_delegate_definitions, "  public delegate %s", tm); 
+	}
   	String *modifiers = (csdirectordelegatemodifiers ? NewStringf("%s%s", csdirectordelegatemodifiers, Len(csdirectordelegatemodifiers) > 0 ? " " : "") : NewStringf("public ")); 
   	Printf(director_delegate_definitions, "  %sdelegate %s", modifiers, tm); 
 	Delete(modifiers); 
@@ -3898,8 +3932,14 @@ public:
     Swig_typemap_attach_parms("directorargout", l, w);
 
     /* Preamble code */
-    if (!ignored_method)
-      Printf(w->code, "if (!swig_callback%s) {\n", overloaded_name);
+    if (!ignored_method) {
+      Printf(w->code, "if (!swig_callback%s", overloaded_name);
+      if (aot_callback_def) {
+	Printf(w->code, " || !swig_callback%s_handle", overloaded_name);
+      }
+      Printf(w->code, ") {\n");
+
+    }
 
     if (!pure_virtual) {
       String *super_call = Swig_method_call(super, l);
@@ -4071,6 +4111,11 @@ public:
       Delete(c_decl);
     }
 
+    if (aot_support_flag) {
+      Printf(aot_delegate_parms, "%s, global::System.IntPtr swig_callback_handle", delegate_parms);
+      Printf(callback_typedef_parms, ", void *swig_callback_handle");
+    }
+
     /* header declaration, start wrapper definition */
     String *target;
     SwigType *rtype = Getattr(n, "conversion_operator") ? 0 : Getattr(n, "classDirectorMethods:type");
@@ -4119,6 +4164,11 @@ public:
     Printf(callback_def, "%s)", delegate_parms);
     Printf(callback_def, " {\n");
 
+    if (aot_support_flag) {
+	Printf(aot_callback_def, "%s)", aot_delegate_parms);
+	Printf(aot_callback_def, " {\n");
+    }
+
     /* Emit the intermediate class's upcall to the actual class */
 
     String *upcall = NewStringf("%s(%s)", symname, imcall_args);
@@ -4126,6 +4176,7 @@ public:
     if ((tm = Swig_typemap_lookup("csdirectorout", n, "", 0))) {
       substituteClassname(returntype, tm);
       Replaceall(tm, "$cscall", upcall);
+      
       if (!is_void)
 	Insert(tm, 0, "return ");
       Replaceall(tm, "\n ", "\n   "); // add extra indentation to code in typemap
@@ -4147,13 +4198,32 @@ public:
     }
 
     Printf(callback_code, "  }\n");
+
+    if(aot_support_flag) {
+      Printf(aot_callback_def, "    global::System.Runtime.InteropServices.GCHandle swig_handle = global::System.Runtime.InteropServices.GCHandle.FromIntPtr(swig_callback_handle);\n");
+      Printf(aot_callback_def, "    SwigDelegate%s_%s swigCallback = ", classname, methid);
+      Printf(aot_callback_def, "(SwigDelegate%s_%s) swig_handle.Target;\n", classname, methid);
+      Printf(aot_callback_def, "    ");
+      if(!is_void) {
+	Printf(aot_callback_def, "return ");
+      }
+      Printf(aot_callback_def, "swigCallback(%s);\n", imcall_args);
+      Printf(aot_callback_def, "    }\n");
+
+      Printf(callback_code, "\n%s", aot_callback_def);
+    }
+
     Delete(upcall);
 
     if (!ignored_method) {
       if (!is_void)
 	Printf(w->code, "jresult = (%s) ", c_ret_type);
 
-      Printf(w->code, "swig_callback%s(%s);\n", overloaded_name, jupcall_args);
+      Printf(w->code, "swig_callback%s(%s", overloaded_name, jupcall_args);
+      if (aot_support_flag) {
+	Printf(w->code, ", swig_callback%s_handle", overloaded_name);
+      }
+      Printf(w->code, ");\n");
 
       if (!is_void) {
 	String *jresult_str = NewString("jresult");
@@ -4233,12 +4303,21 @@ public:
       Printf(director_callback_typedefs, "    typedef %s (SWIGSTDCALL* SWIG_Callback%s_t)(", c_ret_type, methid);
       Printf(director_callback_typedefs, "%s);\n", callback_typedef_parms);
       Printf(director_callbacks, "    SWIG_Callback%s_t swig_callback%s;\n", methid, overloaded_name);
+      if (aot_support_flag) {
+	Printf(director_callbacks, "    void *swig_callback%s_handle;\n", overloaded_name);
+      }
 
       Printf(director_delegate_definitions, " SwigDelegate%s_%s(%s);\n", classname, methid, delegate_parms);
       Printf(director_delegate_instances, "  private SwigDelegate%s_%s swigDelegate%s;\n", classname, methid, methid);
+      if(aot_support_flag) {
+	Printf(aot_delegate_definitions, " SwigDelegateStatic%s_%s(%s);\n", classname, methid, aot_delegate_parms);
+	Printf(director_delegate_instances, "  private global::System.Runtime.InteropServices.GCHandle swigDelegate%s_handle;\n", methid);
+      }
       Printf(director_method_types, "  private static global::System.Type[] swigMethodTypes%s = new global::System.Type[] { %s };\n", methid, proxy_method_types);
       Printf(director_connect_parms, "SwigDirector%s%s delegate%s", classname, methid, methid);
     }
+
+    Printf(director_delegate_definitions, "%s", aot_delegate_definitions);
 
     Delete(pre_code);
     Delete(post_code);
@@ -4443,6 +4522,11 @@ public:
       Printf(f_directors_h, "SWIG_Callback%s_t callback%s", methid, overname);
       Printf(w->def, "SWIG_Callback%s_t callback%s", methid, overname);
       Printf(w->code, "swig_callback%s = callback%s;\n", overname, overname);
+      if (aot_support_flag) {
+      	Printf(f_directors_h, ", void *callback%s_handle", overname);
+      	Printf(w->def, ", void *callback%s_handle", overname);
+      	Printf(w->code, "swig_callback%s_handle = callback%s_handle;\n", overname, overname);
+      }
       if (i != curr_class_dmethod - 1) {
 	Printf(f_directors_h, ", ");
 	Printf(w->def, ", ");
@@ -4548,4 +4632,5 @@ C# Options (available with -csharp)\n\
                        of proxy classes\n\
      -oldvarnames    - Old intermediary method names for variable wrappers\n\
      -outfile <file> - Write all C# into a single <file> located in the output directory\n\
+     -aot            - Generate code needed to support Ahead Of Time compilation (Xamarin.iOS)\n\
 \n";
